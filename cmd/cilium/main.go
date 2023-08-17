@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/cilium/cilium/cilium-cli/hooks"
 	gops "github.com/google/gops/agent"
 
 	"github.com/cilium/cilium-cli/cli"
@@ -19,7 +20,7 @@ func main() {
 		log.Printf("Unable to start gops: %s", err)
 	}
 
-	if err := cli.NewDefaultCiliumCommand().Execute(); err != nil {
+	if err := cli.NewCiliumCommand(&hooks.MichiHooks{}).Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

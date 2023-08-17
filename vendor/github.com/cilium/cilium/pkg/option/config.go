@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/netip"
@@ -24,8 +25,10 @@ import (
 	"github.com/spf13/cast"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	k8sLabels "k8s.io/apimachinery/pkg/labels"
 
+	flowpb "github.com/cilium/cilium/api/v1/flow"
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/cidr"
 	clustermeshTypes "github.com/cilium/cilium/pkg/clustermesh/types"
@@ -756,7 +759,7 @@ const (
 	// IPSecKeyFileName is the name of the option for ipsec key file
 	IPSecKeyFileName = "ipsec-key-file"
 
-	// EnableWireguard is the name of the option to enable wireguard
+	// EnableWireguard is the name of the option to enable WireGuard
 	EnableWireguard = "enable-wireguard"
 
 	// EnableL2Announcements is the name of the option to enable l2 announcements
@@ -771,7 +774,18 @@ const (
 	// L2AnnouncerRetryPeriod, on renew failure, retry after X amount of time.
 	L2AnnouncerRetryPeriod = "l2-announcements-retry-period"
 
-	// EnableWireguardUserspaceFallback is the name of the option that enables the fallback to wireguard userspace mode
+	// EnableEncryptionStrictMode is the name of the option to enable strict encryption mode.
+	EnableEncryptionStrictMode = "enable-encryption-strict-mode"
+
+	// EncryptionStrictModeCIDR is the CIDR in which the strict ecryption mode should be enforced.
+	EncryptionStrictModeCIDR = "encryption-strict-mode-cidr"
+
+	// EncryptionStrictModeAllowRemoteNodeIdentities allows dynamic lookup of remote node identities.
+	// This is required when tunneling is used
+	// or direct routing is used and the node CIDR and pod CIDR overlap.
+	EncryptionStrictModeAllowRemoteNodeIdentities = "encryption-strict-mode-allow-remote-node-identities"
+
+	// EnableWireguardUserspaceFallback is the name of the option that enables the fallback to WireGuard userspace mode
 	EnableWireguardUserspaceFallback = "enable-wireguard-userspace-fallback"
 
 	// NodeEncryptionOptOutLabels is the name of the option for the node-to-node encryption opt-out labels
@@ -810,6 +824,9 @@ const (
 
 	// EnableHealthCheckNodePort is the name of the EnableHealthCheckNodePort option
 	EnableHealthCheckNodePort = "enable-health-check-nodeport"
+
+	// EnableHealthCheckLoadBalancerIP is the name of the EnableHealthCheckLoadBalancerIP option
+	EnableHealthCheckLoadBalancerIP = "enable-health-check-loadbalancer-ip"
 
 	// PolicyQueueSize is the size of the queues utilized by the policy
 	// repository.
@@ -986,6 +1003,15 @@ const (
 	// HubbleExportFileCompress specifies whether rotated files are compressed.
 	HubbleExportFileCompress = "hubble-export-file-compress"
 
+	// HubbleExportAllowlist specifies allow list filter use by exporter.
+	HubbleExportAllowlist = "hubble-export-allowlist"
+
+	// HubbleExportDenylist specifies deny list filter use by exporter.
+	HubbleExportDenylist = "hubble-export-denylist"
+
+	// HubbleExportFieldmask specifies list of fields to log in exporter.
+	HubbleExportFieldmask = "hubble-export-fieldmask"
+
 	// EnableHubbleRecorderAPI specifies if the Hubble Recorder API should be served
 	EnableHubbleRecorderAPI = "enable-hubble-recorder-api"
 
@@ -1005,6 +1031,10 @@ const (
 	// HubbleMonitorEvents specifies Cilium monitor events for Hubble to observe.
 	// By default, Hubble observes all monitor events.
 	HubbleMonitorEvents = "hubble-monitor-events"
+
+	// HubbleRedact controls which values Hubble will redact in network flows.
+	// By default, Hubble does not redact any values.
+	HubbleRedact = "hubble-redact"
 
 	// DisableIptablesFeederRules specifies which chains will be excluded
 	// when installing the feeder rules
@@ -1067,9 +1097,6 @@ const (
 	// K8sServiceProxyName instructs Cilium to handle service objects only when
 	// service.kubernetes.io/service-proxy-name label equals the provided value.
 	K8sServiceProxyName = "k8s-service-proxy-name"
-
-	// APIRateLimitName enables configuration of the API rate limits
-	APIRateLimitName = "api-rate-limit"
 
 	// CRDWaitTimeout is the timeout in which Cilium will exit if CRDs are not
 	// available.
@@ -1697,6 +1724,17 @@ type DaemonConfig struct {
 	// EnableWireguard enables Wireguard encryption
 	EnableWireguard bool
 
+	// EnableEncryptionStrictMode enables strict mode for encryption
+	EnableEncryptionStrictMode bool
+
+	// EncryptionStrictModeCIDR is the CIDR to use for strict mode
+	EncryptionStrictModeCIDR netip.Prefix
+
+	// EncryptionStrictModeAllowRemoteNodeIdentities allows dynamic lookup of node identities.
+	// This is required when tunneling is used
+	// or direct routing is used and the node CIDR and pod CIDR overlap.
+	EncryptionStrictModeAllowRemoteNodeIdentities bool
+
 	// EnableWireguardUserspaceFallback enables the fallback to the userspace implementation
 	EnableWireguardUserspaceFallback bool
 
@@ -1873,6 +1911,10 @@ type DaemonConfig struct {
 	// EnableHealthCheckNodePort enables health checking of NodePort by
 	// cilium
 	EnableHealthCheckNodePort bool
+
+	// EnableHealthCheckLoadBalancerIP enables health checking of LoadBalancerIP
+	// by cilium
+	EnableHealthCheckLoadBalancerIP bool
 
 	// KVstoreKeepAliveInterval is the interval in which the lease is being
 	// renewed. This must be set to a value lesser than the LeaseTTL ideally
@@ -2196,6 +2238,15 @@ type DaemonConfig struct {
 	// HubbleExportFileCompress specifies whether rotated files are compressed.
 	HubbleExportFileCompress bool
 
+	// HubbleExportAllowlist specifies allow list filter use by exporter.
+	HubbleExportAllowlist []*flowpb.FlowFilter
+
+	// HubbleExportDenylist specifies deny list filter use by exporter.
+	HubbleExportDenylist []*flowpb.FlowFilter
+
+	// HubbleExportFieldmask specifies list of fields to log in exporter.
+	HubbleExportFieldmask []string
+
 	// EnableHubbleRecorderAPI specifies if the Hubble Recorder API should be served
 	EnableHubbleRecorderAPI bool
 
@@ -2215,6 +2266,10 @@ type DaemonConfig struct {
 	// HubbleMonitorEvents specifies Cilium monitor events for Hubble to observe.
 	// By default, Hubble observes all monitor events.
 	HubbleMonitorEvents []string
+
+	// HubbleRedact controls which values Hubble will redact in network flows.
+	// By default, Hubble does not redact any values.
+	HubbleRedact []string
 
 	// EndpointStatus enables population of information in the
 	// CiliumEndpoint.Status resource
@@ -2282,9 +2337,6 @@ type DaemonConfig struct {
 	// the label is not present. For more details -
 	// https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/2447-Make-kube-proxy-service-abstraction-optional
 	K8sServiceProxyName string
-
-	// APIRateLimitName enables configuration of the API rate limits
-	APIRateLimit map[string]string
 
 	// CRDWaitTimeout is the timeout in which Cilium will exit if CRDs are not
 	// available.
@@ -2393,46 +2445,46 @@ type DaemonConfig struct {
 var (
 	// Config represents the daemon configuration
 	Config = &DaemonConfig{
-		CreationTime:                 time.Now(),
-		Opts:                         NewIntOptions(&DaemonOptionLibrary),
-		Monitor:                      &models.MonitorStatus{Cpus: int64(runtime.NumCPU()), Npages: 64, Pagesize: int64(os.Getpagesize()), Lost: 0, Unknown: 0},
-		IPv6ClusterAllocCIDR:         defaults.IPv6ClusterAllocCIDR,
-		IPv6ClusterAllocCIDRBase:     defaults.IPv6ClusterAllocCIDRBase,
-		EnableHostIPRestore:          defaults.EnableHostIPRestore,
-		EnableHealthChecking:         defaults.EnableHealthChecking,
-		EnableEndpointHealthChecking: defaults.EnableEndpointHealthChecking,
-		EnableHealthCheckNodePort:    defaults.EnableHealthCheckNodePort,
-		EnableIPv4:                   defaults.EnableIPv4,
-		EnableIPv6:                   defaults.EnableIPv6,
-		EnableIPv6NDP:                defaults.EnableIPv6NDP,
-		EnableSCTP:                   defaults.EnableSCTP,
-		EnableL7Proxy:                defaults.EnableL7Proxy,
-		EndpointStatus:               make(map[string]struct{}),
-		DNSMaxIPsPerRestoredRule:     defaults.DNSMaxIPsPerRestoredRule,
-		ToFQDNsMaxIPsPerHost:         defaults.ToFQDNsMaxIPsPerHost,
-		KVstorePeriodicSync:          defaults.KVstorePeriodicSync,
-		KVstoreConnectivityTimeout:   defaults.KVstoreConnectivityTimeout,
-		IPAllocationTimeout:          defaults.IPAllocationTimeout,
-		IdentityChangeGracePeriod:    defaults.IdentityChangeGracePeriod,
-		IdentityRestoreGracePeriod:   defaults.IdentityRestoreGracePeriod,
-		FixedIdentityMapping:         make(map[string]string),
-		KVStoreOpt:                   make(map[string]string),
-		LogOpt:                       make(map[string]string),
-		LoopbackIPv4:                 defaults.LoopbackIPv4,
-		EnableEndpointRoutes:         defaults.EnableEndpointRoutes,
-		AnnotateK8sNode:              defaults.AnnotateK8sNode,
-		K8sServiceCacheSize:          defaults.K8sServiceCacheSize,
-		AutoCreateCiliumNodeResource: defaults.AutoCreateCiliumNodeResource,
-		IdentityAllocationMode:       IdentityAllocationModeKVstore,
-		AllowICMPFragNeeded:          defaults.AllowICMPFragNeeded,
-		EnableWellKnownIdentities:    defaults.EnableWellKnownIdentities,
-		K8sEnableK8sEndpointSlice:    defaults.K8sEnableEndpointSlice,
-		AllocatorListTimeout:         defaults.AllocatorListTimeout,
-		EnableICMPRules:              defaults.EnableICMPRules,
-		UseCiliumInternalIPForIPsec:  defaults.UseCiliumInternalIPForIPsec,
+		CreationTime:                    time.Now(),
+		Opts:                            NewIntOptions(&DaemonOptionLibrary),
+		Monitor:                         &models.MonitorStatus{Cpus: int64(runtime.NumCPU()), Npages: 64, Pagesize: int64(os.Getpagesize()), Lost: 0, Unknown: 0},
+		IPv6ClusterAllocCIDR:            defaults.IPv6ClusterAllocCIDR,
+		IPv6ClusterAllocCIDRBase:        defaults.IPv6ClusterAllocCIDRBase,
+		EnableHostIPRestore:             defaults.EnableHostIPRestore,
+		EnableHealthChecking:            defaults.EnableHealthChecking,
+		EnableEndpointHealthChecking:    defaults.EnableEndpointHealthChecking,
+		EnableHealthCheckLoadBalancerIP: defaults.EnableHealthCheckLoadBalancerIP,
+		EnableHealthCheckNodePort:       defaults.EnableHealthCheckNodePort,
+		EnableIPv4:                      defaults.EnableIPv4,
+		EnableIPv6:                      defaults.EnableIPv6,
+		EnableIPv6NDP:                   defaults.EnableIPv6NDP,
+		EnableSCTP:                      defaults.EnableSCTP,
+		EnableL7Proxy:                   defaults.EnableL7Proxy,
+		EndpointStatus:                  make(map[string]struct{}),
+		DNSMaxIPsPerRestoredRule:        defaults.DNSMaxIPsPerRestoredRule,
+		ToFQDNsMaxIPsPerHost:            defaults.ToFQDNsMaxIPsPerHost,
+		KVstorePeriodicSync:             defaults.KVstorePeriodicSync,
+		KVstoreConnectivityTimeout:      defaults.KVstoreConnectivityTimeout,
+		IPAllocationTimeout:             defaults.IPAllocationTimeout,
+		IdentityChangeGracePeriod:       defaults.IdentityChangeGracePeriod,
+		IdentityRestoreGracePeriod:      defaults.IdentityRestoreGracePeriod,
+		FixedIdentityMapping:            make(map[string]string),
+		KVStoreOpt:                      make(map[string]string),
+		LogOpt:                          make(map[string]string),
+		LoopbackIPv4:                    defaults.LoopbackIPv4,
+		EnableEndpointRoutes:            defaults.EnableEndpointRoutes,
+		AnnotateK8sNode:                 defaults.AnnotateK8sNode,
+		K8sServiceCacheSize:             defaults.K8sServiceCacheSize,
+		AutoCreateCiliumNodeResource:    defaults.AutoCreateCiliumNodeResource,
+		IdentityAllocationMode:          IdentityAllocationModeKVstore,
+		AllowICMPFragNeeded:             defaults.AllowICMPFragNeeded,
+		EnableWellKnownIdentities:       defaults.EnableWellKnownIdentities,
+		K8sEnableK8sEndpointSlice:       defaults.K8sEnableEndpointSlice,
+		AllocatorListTimeout:            defaults.AllocatorListTimeout,
+		EnableICMPRules:                 defaults.EnableICMPRules,
+		UseCiliumInternalIPForIPsec:     defaults.UseCiliumInternalIPForIPsec,
 
 		K8sEnableLeasesFallbackDiscovery: defaults.K8sEnableLeasesFallbackDiscovery,
-		APIRateLimit:                     make(map[string]string),
 
 		ExternalClusterIP:      defaults.ExternalClusterIP,
 		EnableVTEP:             defaults.EnableVTEP,
@@ -2559,7 +2611,7 @@ func (c *DaemonConfig) TunnelDevice() string {
 // takes care of the MTU overhead. So no need to take it into account here.
 // See encap_geneve_dsr_opt[4,6] in nodeport.h
 func (c *DaemonConfig) TunnelExists() bool {
-	return c.TunnelingEnabled() || c.EnableIPv4EgressGateway || c.EnableHighScaleIPcache
+	return c.TunnelingEnabled() || c.EgressGatewayCommonEnabled() || c.EnableHighScaleIPcache
 }
 
 // AreDevicesRequired returns true if the agent needs to attach to the native
@@ -2708,6 +2760,12 @@ func (c *DaemonConfig) K8sIngressControllerEnabled() bool {
 // K8sGatewayAPIEnabled returns true if Gateway API feature is enabled in Cilium
 func (c *DaemonConfig) K8sGatewayAPIEnabled() bool {
 	return c.EnableGatewayAPI
+}
+
+// EgressGatewayCommonEnabled returns true if at least one egress gateway implementation
+// is enabled.
+func (c *DaemonConfig) EgressGatewayCommonEnabled() bool {
+	return c.EnableIPv4EgressGateway
 }
 
 // DirectRoutingDeviceRequired return whether the Direct Routing Device is needed under
@@ -2998,6 +3056,7 @@ func (c *DaemonConfig) Populate(vp *viper.Viper) {
 	c.EnableHealthChecking = vp.GetBool(EnableHealthChecking)
 	c.EnableEndpointHealthChecking = vp.GetBool(EnableEndpointHealthChecking)
 	c.EnableHealthCheckNodePort = vp.GetBool(EnableHealthCheckNodePort)
+	c.EnableHealthCheckLoadBalancerIP = vp.GetBool(EnableHealthCheckLoadBalancerIP)
 	c.EnableLocalNodeRoute = vp.GetBool(EnableLocalNodeRoute)
 	c.EnablePolicy = strings.ToLower(vp.GetString(EnablePolicy))
 	c.EnableExternalIPs = vp.GetBool(EnableExternalIPs)
@@ -3205,6 +3264,26 @@ func (c *DaemonConfig) Populate(vp *viper.Viper) {
 		}
 	}
 
+	encryptionStrictModeEnabled := vp.GetBool(EnableEncryptionStrictMode)
+	if encryptionStrictModeEnabled {
+		if c.EnableIPv6 {
+			log.Warnf("WireGuard encryption strict mode only support IPv4. IPv6 traffic is not protected and can be leaked.")
+		}
+
+		strictCIDR := vp.GetString(EncryptionStrictModeCIDR)
+		c.EncryptionStrictModeCIDR, err = netip.ParsePrefix(strictCIDR)
+		if err != nil {
+			log.WithError(err).Fatalf("Cannot parse CIDR %s from --%s option", strictCIDR, EncryptionStrictModeCIDR)
+		}
+
+		if !c.EncryptionStrictModeCIDR.Addr().Is4() {
+			log.Fatalf("%s must be an IPv4 CIDR", EncryptionStrictModeCIDR)
+		}
+
+		c.EncryptionStrictModeAllowRemoteNodeIdentities = vp.GetBool(EncryptionStrictModeAllowRemoteNodeIdentities)
+		c.EnableEncryptionStrictMode = encryptionStrictModeEnabled
+	}
+
 	ipv4NativeRoutingCIDR := vp.GetString(IPv4NativeRoutingCIDR)
 
 	if ipv4NativeRoutingCIDR != "" {
@@ -3335,12 +3414,6 @@ func (c *DaemonConfig) Populate(vp *viper.Viper) {
 		c.LogOpt = m
 	}
 
-	if m, err := command.GetStringMapStringE(vp, APIRateLimitName); err != nil {
-		log.Fatalf("unable to parse %s: %s", APIRateLimitName, err)
-	} else {
-		c.APIRateLimit = m
-	}
-
 	c.bpfMapEventConfigs = make(BPFEventBufferConfigs)
 	parseBPFMapEventConfigs(c.bpfMapEventConfigs, defaults.BPFEventBufferConfigs)
 	if m, err := command.GetStringMapStringE(vp, BPFMapEventBuffers); err != nil {
@@ -3435,11 +3508,45 @@ func (c *DaemonConfig) Populate(vp *viper.Viper) {
 	c.HubbleExportFileMaxSizeMB = vp.GetInt(HubbleExportFileMaxSizeMB)
 	c.HubbleExportFileMaxBackups = vp.GetInt(HubbleExportFileMaxBackups)
 	c.HubbleExportFileCompress = vp.GetBool(HubbleExportFileCompress)
+
+	for _, enc := range vp.GetStringSlice(HubbleExportAllowlist) {
+		dec := json.NewDecoder(strings.NewReader(enc))
+		var result flowpb.FlowFilter
+		if err := dec.Decode(&result); err != nil {
+			if err == io.EOF {
+				break
+			}
+			log.Fatalf("failed to decode hubble-export-allowlist '%v': %s", enc, err)
+		}
+		c.HubbleExportAllowlist = append(c.HubbleExportAllowlist, &result)
+	}
+
+	for _, enc := range vp.GetStringSlice(HubbleExportDenylist) {
+		dec := json.NewDecoder(strings.NewReader(enc))
+		var result flowpb.FlowFilter
+		if err := dec.Decode(&result); err != nil {
+			if err == io.EOF {
+				break
+			}
+			log.Fatalf("failed to decode hubble-export-denylist '%v': %s", enc, err)
+		}
+		c.HubbleExportDenylist = append(c.HubbleExportDenylist, &result)
+	}
+
+	if fm := vp.GetStringSlice(HubbleExportFieldmask); len(fm) > 0 {
+		_, err := fieldmaskpb.New(&flowpb.Flow{}, fm...)
+		if err != nil {
+			log.Fatalf("hubble-export-fieldmask contains invalid fieldmask '%v': %s", fm, err)
+		}
+		c.HubbleExportFieldmask = vp.GetStringSlice(HubbleExportFieldmask)
+	}
+
 	c.EnableHubbleRecorderAPI = vp.GetBool(EnableHubbleRecorderAPI)
 	c.HubbleRecorderStoragePath = vp.GetString(HubbleRecorderStoragePath)
 	c.HubbleRecorderSinkQueueSize = vp.GetInt(HubbleRecorderSinkQueueSize)
 	c.HubbleSkipUnknownCGroupIDs = vp.GetBool(HubbleSkipUnknownCGroupIDs)
 	c.HubbleMonitorEvents = vp.GetStringSlice(HubbleMonitorEvents)
+	c.HubbleRedact = vp.GetStringSlice(HubbleRedact)
 
 	c.DisableIptablesFeederRules = vp.GetStringSlice(DisableIptablesFeederRules)
 
@@ -3692,6 +3799,15 @@ func (c *DaemonConfig) checkIPAMDelegatedPlugin() error {
 		}
 		if c.EnableEndpointHealthChecking {
 			return fmt.Errorf("--%s must be disabled with --%s=%s", EnableEndpointHealthChecking, IPAM, ipamOption.IPAMDelegatedPlugin)
+		}
+		// Ingress controller and envoy config require cilium-agent to create an IP address
+		// specifically for differentiating ingress and envoy traffic, which is not possible
+		// with delegated IPAM.
+		if c.EnableIngressController {
+			return fmt.Errorf("--%s must be disabled with --%s=%s", EnableIngressController, IPAM, ipamOption.IPAMDelegatedPlugin)
+		}
+		if c.EnableEnvoyConfig {
+			return fmt.Errorf("--%s must be disabled with --%s=%s", EnableEnvoyConfig, IPAM, ipamOption.IPAMDelegatedPlugin)
 		}
 	}
 	return nil

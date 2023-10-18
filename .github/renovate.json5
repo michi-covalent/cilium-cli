@@ -188,11 +188,12 @@
       ]
     },
     {
+      "customType": "regex",
       "fileMatch": [
-        "^go.mod$",
+        "^go\\.mod$"
       ],
       "matchStrings": [
-        "// renovate: datasource=(?<datasource>.*?) depName=(?<depName>.*?)\\s+.+go (?<currentValue>.*)"
+        "// renovate: datasource=(?<datasource>.*?) depName=(?<depName>.*?)\\s+go (?<currentValue>.*)"
       ]
     }
   ]

@@ -19,8 +19,6 @@ concurrency:
 
 jobs:
   build-and-push-prs:
-    if: ${{ github.repository == 'cilium/cilium-cli' }}
-    environment: ci
     runs-on: ubuntu-22.04
     strategy:
       matrix:
@@ -30,13 +28,6 @@ jobs:
     steps:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d70bba72b1f3fd22344832f00baa16ece964efeb # v3.3.0
-
-      - name: Login to quay.io for CI
-        uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
-        with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_CI_USERNAME }}
-          password: ${{ secrets.QUAY_CI_TOKEN }}
 
       - name: Getting image tag
         id: tag
@@ -62,7 +53,7 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          push: true
+          push: false
           platforms: linux/amd64
           tags: |
             quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci:latest
@@ -105,7 +96,6 @@ jobs:
           retention-days: 1
 
   image-digests:
-    if: ${{ github.repository == 'cilium/cilium-cli' }}
     name: Display Digests
     runs-on: ubuntu-22.04
     needs: [build-and-push-prs]
